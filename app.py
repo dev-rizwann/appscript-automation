@@ -1,20 +1,20 @@
-from flask import Flask, request, jsonify
-from pathlib import Path
-import tempfile
+# app.py
 import os
+import tempfile
+from pathlib import Path
 
-from web import convert_pdf_to_dataframe
+from flask import Flask, request, jsonify
+
+from web import convert_pdfs_to_json  # <-- we return ALL 3 tabs as JSON
 
 app = Flask(__name__)
 
 def get_api_key():
-    # Prefer Render env var API_KEY; fallback to "api" just in case.
-    # Strip whitespace to avoid invisible mismatch.
+    # Render env var should be API_KEY. We'll also accept "api" just in case.
     return (os.environ.get("API_KEY") or os.environ.get("api") or "").strip()
 
 @app.route("/", methods=["GET"])
 def health():
-    # Helps confirm env var is loaded (without exposing it)
     k = get_api_key()
     return jsonify({
         "status": "ok",
@@ -27,18 +27,16 @@ def convert_api():
     api_key = get_api_key()
     sent_key = (request.headers.get("X-API-KEY") or "").strip()
 
-    # If the server key is missing, make it obvious in Render logs.
     if not api_key:
         return jsonify({"error": "Server API_KEY not configured"}), 500
 
-    # Debug info without leaking secrets
     if sent_key != api_key:
         return jsonify({
             "error": "Unauthorized",
             "debug": {
+                "header_present": "X-API-KEY" in request.headers,
                 "sent_key_length": len(sent_key),
                 "server_key_length": len(api_key),
-                "header_present": "X-API-KEY" in request.headers
             }
         }), 401
 
@@ -53,17 +51,12 @@ def convert_api():
         pdf_path = Path(tmp) / file.filename
         file.save(pdf_path)
 
-        df = convert_pdf_to_dataframe(pdf_path)
+        result = convert_pdfs_to_json([pdf_path])
+        if not result or result.get("status") != "success":
+            return jsonify({"error": "Conversion failed"}), 500
 
-        if df is None or df.empty:
-            return jsonify({"error": "Conversion failed / no rows extracted"}), 500
-
-        return jsonify({
-            "status": "success",
-            "columns": list(df.columns),
-            "rows": df.values.tolist()
-        })
+        return jsonify(result), 200
 
 if __name__ == "__main__":
-    # Render uses gunicorn; this is only for local testing
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
